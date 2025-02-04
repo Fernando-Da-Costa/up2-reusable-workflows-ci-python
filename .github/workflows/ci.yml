@@ -1,0 +1,22 @@
+name: Python build Workflow with iupipes.yml
+
+on:
+  workflow_call:
+    inputs:
+      runs-on:
+        required: false
+        type: string
+        default: ${{ vars.RUNNER_K8S_OD_MEDIUM }}
+      build-working-directory:
+        required: false
+        type: string
+        default: '.'
+      build-python-version:
+        required: false
+        type: string
+        default: '3.8'
+      build-architecture:
+        required: false
+        type: string
+      build-requirement-path:
+        required: false
