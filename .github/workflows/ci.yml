@@ -20,3 +20,243 @@ on:
         type: string
       build-requirement-path:
         required: false
+      type: string
+      build-pre-build-commands:
+        required: false
+        type: string
+        default: 'ls -la'
+      build-distribution:
+        required: false
+        type: string
+      build-java-version:
+        required: false
+        type: string
+      test-working-directory:
+        required: false
+        type: string
+        default: '.'
+      test-requirement-path:
+        required: false
+        type: string
+      test-disable:
+        required: false
+        type: string
+        default: false
+      publish-deploy-only:
+        required: false
+        type: string
+      publish-copy-all-dependency:
+        required: false
+        type: string
+      publish-install-dependency-path:
+        type: string
+      publish-pip-install-parameters:
+        required: false
+        type: string
+      publish-exclude-folder-or-file:
+        required: false
+        type: string
+        default: 'off'
+      iupipes-config-path:
+        required: false
+        type: string
+        default: '.iupipes.yml'
+        secrets:
+      APPLICATION_ID:
+        required: true
+      APP_PRIVATE_KEY:
+        required: true
+      ADU:
+        required: true
+      ADPEP:
+        required: true
+
+jobs:
+  python-build:
+    name: Build
+    runs-on: ${{ inputs.runs-on }}
+    strategy:
+      fail-fast: false
+    defaults:
+      run:
+        working-directory: ${{ inputs.build-working-directory }}
+    steps:
+      - name: Checkout Repository
+        uses: itau-corp/itau-up2-action-external-management/.github/actions/actions/checkout@v1
+
+      - uses: itau-corp/itau-up2-action-external-management/.github/actions/actions/setup-python@v1
+        with:
+          python-version: ${{ inputs.build-python-version }}
+          architecture: ${{ inputs.build-architecture }}
+        cache: 'pip'
+        cache-dependency-path: '**/requirements*.txt'
+
+      - name: Set Env LD
+        run: echo "LIBRARY_PATH=$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Python install
+        run: |
+          pip install
+          python --version
+          ARTIFACTORY_URL="${{ vars.ARTIFACTORY_URL }}"
+          ARTIFACTORY_PIP_URL="${ARTIFACTORY_URL}/artifactory/api/pypi/python-remotes/simple"
+          mkdir -p $HOME/.pip
+          echo -e "[global]\nindex-url = ${ARTIFACTORY_PIP_URL}\ntrusted-host = ${ARTIFACTORY_URL:8}" > $HOME/.pip/pip.conf
+
+          python -m pip install -U pip "setuptools<62.1.0" wheel pytest pytest-cov --ignore-installed
+
+          if [ -f ${{ inputs.build-requirement-path }} ]; then
+              sed -i "s#443#1#" ${{ inputs.build-requirement-path }}
+              sed -i "s|https://|${{ secrets.ADU }}:${{ secrets.ADEP }}@|g" ${{ inputs.build-requirement-path }}
+              cat ${{ inputs.build-requirement-path }}
+              python -m pip install -r ${{ inputs.build-requirement-path }} --ignore-installed
+          fi
+
+          shell: bash
+
+          - name: Python Build
+            run: |
+              ${{ inputs.build-pre-build-commands }}
+              python -m compileall
+            shell: bash
+
+          - name: Check Excludes File or Folder
+            run: |
+              ls -ltra
+              pwd
+              if [[ "${{ inputs.publish-exclude-folder-or-file }}" != 'off' ]]; then
+                IFS=$'\n' read -ra files <<< "${{ inputs.publish-exclude-folder-or-file }}"
+                for file in "${files[@]}"
+                do
+                  paths=$(find . -type f -name "$file" -o -type d -name "$file")
+                  echo "Path $path"
+                  if [ -n $path ]; then
+                    echo "Excluding $path"
+                    rm -rf $path
+                  else
+                    echo "No file or folder to exclude"
+                  fi
+                done
+              else
+                echo "No file or folder to exclude"
+              fi
+              pwd
+              ls -ltra
+          - name: Configure Artifacts Path
+            run: |
+              export artifacts_name=$(echo $GITHUB_REPOSITORY-${{ inputs.build-working-directory}}-$GITHUB_SHA | tr / - )
+              echo "artifacts_name=${artifacts_name}" >> $GITHUB_ENV
+              export artifact_path="/tmp/$artifacts_name"
+              export pipeline_type=$(echo $GITHUB_REPOSITORY | awk -F '-' '{print $4}')
+              echo "pipeline_type=$pipeline_type" >> $GITHUB_ENV
+              echo "tipo da pipeline = $pipeline_type"
+              mkdir -p $artifact_path
+          
+              if [[ "${{ inputs.publish-copy-all-dependency }}" == 'true' &&
+                    -d "${{ inputs.publish-install-dependency-path }}" &&
+                    -f "${{ inputs.build-requirement-path }}" ]]; then
+                python -m pip install -r ${{ inputs.build-requirement-path }} -t ${{ inputs.publish-install-dependency-path }}
+              fi
+          
+              if [[ "${{ inputs.publish-deploy-only }}" != '' ]]; then
+                cd ${{ inputs.publish-deploy-only }}
+                cp -r $artifact_path
+              else
+                cp -r $artifact_path
+              fi
+          
+              cd $artifact_path
+          
+              echo "Compactando resultado do build"
+              ls -lrth
+              zip -r ${{ github.workspace }}/$artifacts_name.zip *
+
+          - uses: itau-corp/itau-u02-action-external-management/.github/actions/actions/upload-artifact@v1
+            with:
+              ref: ${{ github.ref == 'refs/heads/feat' }} || env.pipeline_type == 'dep' || vars.GITOPS }}
+              name: ${{ env.artifacts_name }}
+              path: ${{ github.workspace }}/$${{ env.artifacts_name }}.zip
+              retention-days: 1
+  python-test:
+    if: ${{ !inputs.test-disable == 'true' }}
+    name: Test
+    runs-on: ${{ inputs.runs-on }}
+    env:
+      region_name: ap-southeast-1
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+      AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+      AWS_DEFAULT_REGION: ap-southeast-1
+    defaults:
+      run:
+        fail-fast: false
+        working-directory: ${{ inputs.test-working-directory }}
+    steps:
+      - name: Checkout Repository
+        uses: itau-corpt/itau-github-action-external-management@v1.0.0@github/actions/checkout@v1
+
+      - name: Setup Python
+        uses: itau-corpt/itau-github-action-external-management@v1.0.0@github/actions/setup-python@v1
+        with:
+          python-version: ${{ inputs.build-python-version }}
+          architecture: ${{ inputs.build-python-architecture }}
+          cache: 'pip'
+          cache-dependency-path: ${{ inputs.build-python-cache-dependency-path }}
+
+      # necessário para execução de libs específicas, exemplo Spark
+      - name: Setup Java
+        uses: itau-corpt/itau-github-action-external-management@v1.0.0@github/actions/setup-java@v1
+        with:
+          distribution: ${{ inputs.build-java-distribution }}
+          java-version: ${{ inputs.build-java-version }}
+          architecture: ${{ inputs.build-java-architecture }}
+          cache: 'gradle'
+          cache-dependency-path: ${{ inputs.build-java-cache-dependency-path }}
+
+      - name: Set Env ID
+        run: echo "TMS_ENV_PATH=$TMS_ENV_LIBRARY_PATH" >> $GITHUB_ENV
+
+
+      - name: Python Install
+        run: |
+          - pip install
+          - python --version
+          - ARTIFACTORY_URL="${{ vars.ARTIFACTORY_URL }}"
+          - ARTIFACTORY_PIP_URL="${ARTIFACTORY_URL}/artifactory/api/pypi/python-remotes/simple"
+          - mkdir -p $HOME/.pip
+          - echo -e "[global]\nindex-url = ${ARTIFACTORY_PIP_URL}\ntrusted-host = ${ARTIFACTORY_URL:8}" > $HOME/.pip/pip.conf
+          - python -m pip install -U pip "setuptools<72.1.0" wheel pytest pytest-cov --ignore-installed
+          - if [[ -f $(inputs.test-requirement-path ) ]]; then
+          - sed -i "s|:443||g" $(if inputs.test-requirement-path )
+          - sed -i "s|${{ secrets.AUD }}|${{ secrets.ADPEP }}|g" $(if inputs.test-requirement-path )
+          - python -m pip install -r $(if inputs.test-requirement-path ) --ignore-installed
+          - fi
+
+        shell: bash
+
+      - name: Python Test
+        run: |
+          - python -m pip install --upgrade pip
+          - python -m pip install flake8 pytest coverage pytest-cov
+          - python -m pytest --cov --cov-report xml --cov-report annotate --cov=./
+
+            export artifacts_name=$(echo $GITHUB_REPOSITORY-$(if inputs.build-working-directory)-$GITHUB_SHA | tr / -)
+            echo "artifacts name=${artifacts_name}" >> $GITHUB_ENV
+            export pipeline_type=$(echo $GITHUB_REPOSITORY | awk -F '/' '{print $4}')
+            echo "pipeline_type=${pipeline_type}" >> $GITHUB_ENV
+            echo "tipo da pipeline é ${pipeline_type}"
+
+        shell: bash
+
+      - uses: itau-corp/itau-u92-action-external-management/.github/actions/actions/upload-artifact@v1
+        with:
+          ref: ${{ github.event.ref/heads/{feat} }} if env.pipeline_type == 'dep' if vars.GITOPS
+        run: |
+          - python -m test $(if env.artifacts_name )
+          - python -m coverage xml -o $(if inputs.test-working-directory )/coverage.xml
+          - python -m coverage report --omit $(if inputs.test-working-directory )/coverage.xml
+
+        retention-days: 1
+
+
+
